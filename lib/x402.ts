@@ -16,177 +16,111 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BatchFacilitatorClient } from "@circle-fin/x402-batching/server";
+import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 
-// Arc Testnet contract addresses (from @circle-fin/x402-batching SDK)
 const ARC_TESTNET_NETWORK = "eip155:5042002";
-const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000";
-const ARC_TESTNET_GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
+const TESTNET_FACILITATOR_URL = "https://gateway-api-testnet.circle.com";
 
 export const sellerAddress = process.env.SELLER_ADDRESS as `0x${string}`;
-
-const facilitator = new BatchFacilitatorClient();
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-interface PaymentPayload {
-  x402Version: number;
-  resource?: { url: string; description: string; mimeType: string };
-  accepted?: Record<string, unknown>;
-  payload: Record<string, unknown>;
-  extensions?: Record<string, unknown>;
-}
+// Single middleware instance shared by every paywalled route. It fetches the
+// accepted networks / USDC addresses / verifying contract from the facilitator,
+// so the manual Arc-specific `extra` block is no longer hardcoded here.
+const gateway = createGatewayMiddleware({
+  sellerAddress,
+  networks: [ARC_TESTNET_NETWORK],
+  facilitatorUrl: TESTNET_FACILITATOR_URL,
+});
 
-function buildPaymentRequirements(price: string) {
-  // Parse dollar amount to USDC atomic units (6 decimals)
-  const amount = Math.round(parseFloat(price.replace("$", "")) * 1_000_000);
+// --- Lifecycle hooks: the integration surface for Haia Trace (HAD-336 phase 4).
+// verify/settle spans attach here. For now they persist the settled payment and
+// log; swap the bodies for Haia Trace spans once its SDK lands.
+gateway.onBeforeVerify(async (ctx) => {
+  console.log(`[haia-trace] verify start ${ctx.requirements.network}`);
+});
 
-  return {
-    scheme: "exact" as const,
-    network: ARC_TESTNET_NETWORK,
-    asset: ARC_TESTNET_USDC,
-    amount: amount.toString(),
-    payTo: sellerAddress,
-    maxTimeoutSeconds: 345600,
-    extra: {
-      name: "GatewayWalletBatched",
-      version: "1",
-      verifyingContract: ARC_TESTNET_GATEWAY_WALLET,
-    },
-  };
-}
+gateway.onAfterSettle(async (ctx) => {
+  const { requirements, result } = ctx;
+  const amountUsdc = (Number(requirements.amount) / 1e6).toString();
+  const payer = result.payer ?? "unknown";
+
+  const { error } = await supabase.from("payment_events").insert({
+    endpoint: ctx.paymentPayload.resource?.url ?? "unknown",
+    payer,
+    amount_usdc: amountUsdc,
+    network: requirements.network,
+    gateway_tx: result.transaction ?? null,
+    raw: { requirements, result },
+  });
+  if (error) {
+    console.error("Failed to record payment event:", error.message);
+  }
+  console.log(`[haia-trace] settled ${amountUsdc} USDC from ${payer}`);
+});
+
+gateway.onSettleFailure(async (ctx) => {
+  console.error(`[haia-trace] settle failed: ${ctx.error.message}`);
+});
 
 /**
- * Wraps a Next.js route handler with Circle Gateway payment verification.
- *
- * Follows fred-mvp's approach: manually constructs payment requirements with
- * the Gateway batching `extra` field and calls BatchFacilitatorClient directly.
+ * Adapts the SDK's Express-style Gateway middleware to a Next.js App Router
+ * handler. The middleware drives the full x402 lifecycle (402 challenge, verify,
+ * settle, hooks); `next()` bridges through to the actual route handler.
  */
 export function withGateway(
   handler: (req: NextRequest) => Promise<NextResponse>,
   price: string,
   endpoint: string,
 ) {
-  const requirements = buildPaymentRequirements(price);
+  const middleware = gateway.require(price);
 
-  return async (req: NextRequest) => {
-    const paymentSignature = req.headers.get("payment-signature");
+  return async (req: NextRequest): Promise<NextResponse> => {
+    const nodeReq = {
+      method: req.method,
+      // The `resource.url` echoed back to the buyer and used as the Supabase
+      // endpoint label comes from here.
+      url: endpoint,
+      headers: Object.fromEntries(req.headers),
+    } as Record<string, unknown>;
 
-    // No payment — return 402 with Gateway batching payment requirements
-    if (!paymentSignature) {
-      console.log(`[x402] 402 Payment Required: ${endpoint}`);
+    let status = 200;
+    const outHeaders = new Headers();
+    let outBody = "";
+    const nodeRes = {
+      statusCode: 200,
+      setHeader: (k: string, v: string) => outHeaders.set(k, v),
+      end: (b?: string) => {
+        outBody = b ?? "";
+      },
+    };
 
-      const paymentRequired = {
-        x402Version: 2,
-        resource: {
-          url: endpoint,
-          description: `Paid resource (${price} USDC)`,
-          mimeType: "application/json",
-        },
-        accepts: [requirements],
-      };
+    let handlerResponse: NextResponse | null = null;
+    const next = async () => {
+      handlerResponse = await handler(req);
+    };
 
-      return new NextResponse(JSON.stringify({}), {
-        status: 402,
-        headers: {
-          "Content-Type": "application/json",
-          "PAYMENT-REQUIRED": Buffer.from(
-            JSON.stringify(paymentRequired),
-          ).toString("base64"),
-        },
-      });
+    await (middleware as unknown as (
+      req: unknown,
+      res: unknown,
+      next: () => Promise<void>,
+    ) => Promise<void>)(nodeReq, nodeRes, next);
+    status = nodeRes.statusCode;
+
+    // Middleware ran the handler via next() — forward its response, merging the
+    // middleware-set PAYMENT-RESPONSE header.
+    if (handlerResponse) {
+      outHeaders.forEach((v, k) => handlerResponse!.headers.set(k, v));
+      return handlerResponse;
     }
 
-    // Payment present — verify and settle via Circle Gateway
-    try {
-      const paymentPayload: PaymentPayload = JSON.parse(
-        Buffer.from(paymentSignature, "base64").toString("utf-8"),
-      );
-
-      const verifyResult = await facilitator.verify(
-        paymentPayload,
-        requirements,
-      );
-
-      if (!verifyResult.isValid) {
-        return NextResponse.json(
-          {
-            error: "Payment verification failed",
-            reason: verifyResult.invalidReason,
-          },
-          { status: 402 },
-        );
-      }
-
-      const settleResult = await facilitator.settle(
-        paymentPayload,
-        requirements,
-      );
-
-      if (!settleResult.success) {
-        console.error(
-          `[x402] Settlement failed for ${endpoint}: ${settleResult.errorReason}`,
-        );
-        return NextResponse.json(
-          {
-            error: "Payment settlement failed",
-            reason: settleResult.errorReason,
-          },
-          { status: 402 },
-        );
-      }
-
-      // Record payment event in Supabase
-      const amountUsdc = (
-        Number(requirements.amount) / 1e6
-      ).toString();
-      const payer = settleResult.payer ?? verifyResult.payer ?? "unknown";
-
-      const { error } = await supabase.from("payment_events").insert({
-        endpoint,
-        payer,
-        amount_usdc: amountUsdc,
-        network: requirements.network,
-        gateway_tx: settleResult.transaction ?? null,
-        raw: { requirements, settleResult },
-      });
-
-      if (error) {
-        console.error("Failed to record payment event:", error.message);
-      }
-
-      console.log(
-        `[x402] Payment settled: ${endpoint} — ${amountUsdc} USDC from ${payer}`,
-      );
-
-      // Call the actual route handler
-      const response = await handler(req);
-
-      // Forward settlement info to the client
-      const settleResponseHeader = Buffer.from(
-        JSON.stringify({
-          success: true,
-          transaction: settleResult.transaction,
-          network: requirements.network,
-          payer,
-        }),
-      ).toString("base64");
-
-      response.headers.set("PAYMENT-RESPONSE", settleResponseHeader);
-      return response;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
-      console.error("[x402] Payment processing error:", message);
-      return NextResponse.json(
-        { error: "Payment processing error", message },
-        { status: 500 },
-      );
-    }
+    // Middleware short-circuited (402 challenge, verification/settlement error).
+    return new NextResponse(outBody, { status, headers: outHeaders });
   };
 }

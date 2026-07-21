@@ -161,6 +161,28 @@ const gateway = new GatewayClient({
   privateKey: ephemeralKey,
 });
 
+// Buyer-side lifecycle hooks: the integration surface for Haia Trace (HAD-336
+// phase 4). The payment span attaches across these three; for now they log.
+gateway
+  .onBeforePaymentCreation(async (ctx) => {
+    const amount = Number(ctx.selectedRequirements.amount) / 1e6;
+    console.log(
+      `[haia-trace] paying ${amount} USDC for ${ctx.paymentRequired.resource?.url ?? "resource"}`,
+    );
+  })
+  .onAfterPaymentCreation(async (ctx) => {
+    console.log(
+      `[haia-trace] signed ${ctx.paymentPayload.resource?.url ?? "resource"}`,
+    );
+  })
+  .onPaymentResponse(async (ctx) => {
+    if (ctx.settleResponse?.transaction) {
+      console.log(
+        `[haia-trace] settled tx ${ctx.settleResponse.transaction.slice(0, 10)}...`,
+      );
+    }
+  });
+
 let index = 0;
 let inFlight = 0;
 let redepositing = false;
