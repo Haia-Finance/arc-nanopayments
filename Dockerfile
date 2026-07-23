@@ -7,6 +7,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
+# ---------- prod-deps: production node_modules for the agent runtime ----------
+FROM node:22-alpine AS prod-deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
+
 # ---------- builder: compile the Next.js app ----------
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -49,6 +56,14 @@ RUN apk add --no-cache tini libc6-compat \
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Agent CLI: ship the script and a full production node_modules so
+#   `node --experimental-transform-types agent.mts` works from this image.
+# This node_modules is a superset of the standalone trace (which only includes
+# the @circle-fin/x402-batching/server subpath used by the app), so it also
+# satisfies the agent's /client + viem/* subpaths while keeping server.js working.
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/agent.mts ./agent.mts
 
 USER nextjs
 EXPOSE 3000
