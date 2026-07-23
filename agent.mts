@@ -74,7 +74,16 @@ const ARC_TESTNET_RPC = "https://rpc.blockdaemon.testnet.arc.network";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const DEPOSIT_AMOUNT = process.env.DEPOSIT_AMOUNT ?? "1";
-const PAYMENT_INTERVAL_MS = Number(process.env.PAYMENT_INTERVAL_MS ?? 600_000);
+const PAYMENT_INTERVAL_MS = (() => {
+  const raw = process.env.PAYMENT_INTERVAL_MS;
+  if (raw === undefined) return 600_000;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    console.error(`PAYMENT_INTERVAL_MS must be a positive number of ms, got "${raw}"`);
+    process.exit(1);
+  }
+  return ms;
+})();
 // Amount of native USDC to send for gas (Arc testnet gas = USDC with 18 decimals)
 const GAS_FUND_AMOUNT = parseEther("0.01");
 
