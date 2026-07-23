@@ -22,6 +22,9 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   output: "standalone",
   outputFileTracingRoot: process.cwd(),
+  // Pin the workspace root: a stray lockfile in a parent dir (e.g. ~/package-lock.json)
+  // otherwise makes Turbopack infer the wrong root and mis-resolve node_modules.
+  turbopack: { root: process.cwd() },
 };
 
 export default nextConfig;

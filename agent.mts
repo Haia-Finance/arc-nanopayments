@@ -70,10 +70,11 @@ if (!funderKey) {
 }
 
 const ARC_TESTNET_USDC = "0x3600000000000000000000000000000000000000" as const;
-const ARC_TESTNET_RPC = "https://rpc.testnet.arc.network";
+const ARC_TESTNET_RPC = "https://rpc.blockdaemon.testnet.arc.network";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const DEPOSIT_AMOUNT = process.env.DEPOSIT_AMOUNT ?? "1";
+const PAYMENT_INTERVAL_MS = Number(process.env.PAYMENT_INTERVAL_MS ?? 600_000);
 // Amount of native USDC to send for gas (Arc testnet gas = USDC with 18 decimals)
 const GAS_FUND_AMOUNT = parseEther("0.01");
 
@@ -159,6 +160,7 @@ console.log(`  USDC transferred (${usdcTxHash.slice(0, 10)}...)`);
 const gateway = new GatewayClient({
   chain: "arcTestnet",
   privateKey: ephemeralKey,
+  rpcUrl: ARC_TESTNET_RPC,
 });
 
 // Buyer-side lifecycle hooks: the integration surface for Haia Trace (HAD-336
@@ -246,7 +248,7 @@ async function checkAndRedeposit() {
 await depositToGateway();
 
 console.log(
-  `\nTarget: 1 transaction/second across ${endpoints.length} endpoints\n`,
+  `\nTarget: 1 transaction every ${PAYMENT_INTERVAL_MS}ms across ${endpoints.length} endpoints\n`,
 );
 
 // Check balance every 30 seconds and redeposit if low.
@@ -312,7 +314,7 @@ function startPaymentLoop() {
           `#${index} ${ep.url.split("/").pop()} FAILED (${ms}ms): ${err.message} [in-flight: ${inFlight}]`,
         );
       });
-  }, 1000);
+  }, PAYMENT_INTERVAL_MS);
 }
 
 startPaymentLoop();
