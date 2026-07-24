@@ -1,0 +1,47 @@
+arc-nanopayments {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Components:
+  seller (Next.js app)   -> Deployment/Service {{ include "arc-nanopayments.fullname" . }}-seller
+  buyer  (payment agent) -> Deployment {{ include "arc-nanopayments.fullname" . }}-buyer
+  buyer BASE_URL         -> {{ include "arc-nanopayments.sellerBaseUrl" . }}
+
+{{- if .Values.httpRoute.enabled }}
+
+Seller exposed via Gateway API HTTPRoute {{ include "arc-nanopayments.fullname" . }}-seller
+  Hostnames: {{ if .Values.httpRoute.hostnames }}{{ join ", " .Values.httpRoute.hostnames }}{{ else }}(none set — add httpRoute.hostnames){{ end }}
+  Attached to Gateway(s): {{ range .Values.httpRoute.parentRefs }}{{ .name }} {{ end }}
+  Inspect route + programmed status:
+    kubectl -n {{ .Release.Namespace }} get httproute {{ include "arc-nanopayments.fullname" . }}-seller
+  TLS and the load-balancer IP are owned by the referenced Gateway (not this chart).
+  Point DNS for the hostname(s) above at the Gateway's address.
+{{- end }}
+
+Prerequisites this chart does NOT create — set these up once:
+{{- if .Values.image.pullSecrets }}
+
+  1. GHCR image pull secret(s) {{ range .Values.image.pullSecrets }}"{{ .name }}" {{ end }}(package is private):
+       kubectl -n {{ .Release.Namespace }} create secret docker-registry <name> \
+         --docker-server=ghcr.io \
+         --docker-username=<github-user> \
+         --docker-password=<PAT with read:packages>
+{{- end }}
+
+{{- if .Values.externalSecret.enabled }}
+
+  2. External Secrets Operator installed, with a "{{ .Values.externalSecret.secretStoreRef.name }}"
+     {{ .Values.externalSecret.secretStoreRef.kind }} backed by GCP Secret Manager.
+
+  3. A single GCP Secret Manager entry (JSON), synced into the shared Secret
+     "{{ include "arc-nanopayments.externalSecretName" . }}" and consumed by both roles:
+     {{- range .Values.externalSecret.dataFrom }}{{ with .extract }}
+       {{ .key }}  -> keys: SUPABASE_SERVICE_ROLE_KEY, SELLER_PRIVATE_KEY, BUYER_PRIVATE_KEY
+     {{- end }}{{- end }}
+
+     Verify sync:
+       kubectl -n {{ .Release.Namespace }} get externalsecret
+{{- end }}
+{{- if .Values.httpRoute.enabled }}
+
+  4. An existing Gateway (gateway.networking.k8s.io) for the HTTPRoute to attach to,
+     referenced via httpRoute.parentRefs. The Gateway owns the TLS cert and public IP.
+{{- end }}

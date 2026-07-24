@@ -1,0 +1,21 @@
+apiVersion: v2
+name: arc-nanopayments
+description: |
+  Arc nanopayments demo — a Next.js x402 "seller" app plus a payment-agent "buyer",
+  both running from a single container image.
+type: application
+version: "0.1.0"
+# Default container image tag. Override with image.tag for immutable deploys.
+appVersion: "latest"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/Haia-Finance/arc-nanopayments
+sources:
+  - https://github.com/Haia-Finance/arc-nanopayments
+maintainers:
+  - name: Haia
+    url: https://haia.app
+keywords:
+  - x402
+  - nanopayments
+  - circle
+  - arc

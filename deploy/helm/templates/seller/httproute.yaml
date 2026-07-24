@@ -1,0 +1,29 @@
+{{- if .Values.httpRoute.enabled -}}
+{{- $component := "seller" -}}
+{{- if not .Values.httpRoute.parentRefs -}}
+{{- fail "httpRoute.enabled=true requires httpRoute.parentRefs (reference an existing Gateway; the chart does not create one)" -}}
+{{- end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "arc-nanopayments.fullname" . }}-{{ $component }}
+  labels:
+    {{- include "arc-nanopayments.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  {{- with .Values.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        {{- range $path := .Values.httpRoute.pathPrefixes }}
+        - path:
+            type: PathPrefix
+            value: {{ $path | quote }}
+        {{- end }}
+      backendRefs:
+        - name: {{ include "arc-nanopayments.fullname" . }}-{{ $component }}
+          port: {{ .Values.seller.service.port }}
+{{- end -}}

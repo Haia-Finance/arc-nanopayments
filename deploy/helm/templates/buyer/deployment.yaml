@@ -1,0 +1,72 @@
+{{- $component := "buyer" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "arc-nanopayments.fullname" . }}-{{ $component }}
+  labels:
+    {{- include "arc-nanopayments.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.buyer.replicas }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "arc-nanopayments.componentSelectorLabels" (dict "ctx" . "component" $component) | nindent 6 }}
+  strategy:
+    # The agent funds ephemeral wallets from a single funder key; avoid running two
+    # instances of the same generation concurrently during rollout.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "arc-nanopayments.componentSelectorLabels" (dict "ctx" . "component" $component) | nindent 8 }}
+      {{- $ann := deepCopy (.Values.buyer.podAnnotations | default dict) }}
+      {{- with .Values.deployRevision }}{{- $_ := set $ann "arc-nanopayments/deploy-revision" . }}{{- end }}
+      {{- with $ann }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "arc-nanopayments.serviceAccountName" . }}
+      {{- $pullSecrets := include "arc-nanopayments.imagePullSecrets" . }}
+      {{- if $pullSecrets }}
+      imagePullSecrets:
+        {{- $pullSecrets | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "arc-nanopayments.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          # Run the payment agent. Use args (not command) so the image's tini
+          # ENTRYPOINT is preserved — tini stays PID 1 and forwards SIGTERM to
+          # node for a clean shutdown. No --limit: that flag triggers an
+          # interactive stdin prompt (promptForAllowance) that would hang in a pod.
+          args:
+            - node
+            - --experimental-transform-types
+            - --no-warnings
+            - agent.mts
+          envFrom:
+            - configMapRef:
+                name: {{ include "arc-nanopayments.fullname" . }}-config
+            {{- if .Values.externalSecret.enabled }}
+            - secretRef:
+                name: {{ include "arc-nanopayments.externalSecretName" . }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.buyer.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

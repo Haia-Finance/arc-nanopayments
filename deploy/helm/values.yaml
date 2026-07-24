@@ -1,0 +1,139 @@
+# Default values for arc-nanopayments.
+
+# -- Overrides for the generated chart/release name.
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # -- Container registry host.
+  registry: ghcr.io
+  # -- Image repository (without registry host).
+  repository: haia-finance/arc-nanopayments
+  # -- Image tag. Empty string defaults to .Chart.AppVersion ("latest").
+  # Set to an immutable tag (e.g. a git SHA) for reliable rollouts.
+  tag: ""
+  # -- Image pull policy. "Always" is appropriate while tag is "latest".
+  pullPolicy: Always
+  # -- Image pull secrets. The GHCR package is public, so none are needed.
+  # If you make the package private, add e.g. `- name: ghcr-pull`.
+  pullSecrets: []
+
+serviceAccount:
+  # -- Create a ServiceAccount for the workloads.
+  create: true
+  # -- Annotations for the ServiceAccount (e.g. GKE Workload Identity binding).
+  annotations: {}
+  # -- Explicit name; empty uses the generated fullname.
+  name: ""
+
+# -- revisionHistoryLimit for both Deployments.
+revisionHistoryLimit: 3
+
+# -- Rollout marker stamped as a pod annotation on both Deployments. Set this
+# to a per-deploy value (e.g. the git SHA) so Helm rolls the pods even when the
+# image reference is unchanged (e.g. a mutable ":latest" tag with
+# pullPolicy: Always). Empty = no annotation.
+deployRevision: ""
+
+# -- Pod-level security context. uid/gid 1001 matches the image's `nextjs` user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+# -- Container-level security context.
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  allowPrivilegeEscalation: false
+  # Next.js standalone writes to .next/cache at runtime, so the root FS stays writable.
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# -- Scheduling controls applied to every pod.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Non-secret environment, rendered into a ConfigMap and shared by both roles.
+# Extra keys are harmless — each role ignores env it doesn't use.
+config:
+  NODE_ENV: production
+  # Seller wallet address (public). Fill this in.
+  SELLER_ADDRESS: ""
+  # Buyer knobs (agent.mts).
+  DEPOSIT_AMOUNT: "1"
+  PAYMENT_INTERVAL_MS: "600000"
+
+# ---- seller: the Next.js app (node server.js) ----
+seller:
+  replicas: 1
+  containerPort: 3000
+  service:
+    port: 3000
+  # HTTP path used for pod probes and the GKE LB health check.
+  probePath: "/"
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+# ---- buyer: the payment agent (agent.mts) ----
+buyer:
+  replicas: 1
+  # BASE_URL the agent points at. Empty -> in-cluster seller Service.
+  baseUrl: ""
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+httpRoute:
+  # -- Expose the seller via a Gateway API HTTPRoute.
+  enabled: true
+  # -- Existing Gateway(s) to attach to. The chart does NOT create a Gateway;
+  # TLS/listeners live on that Gateway. REQUIRED when httpRoute.enabled.
+  parentRefs:
+    - name: ""           # e.g. the shared external Gateway name
+      # namespace: ""    # optional: Gateway namespace if different
+      # sectionName: ""  # optional: specific Gateway listener
+  # -- Public hostname(s) routed to the seller (e.g. ["arc.example.com"]).
+  hostnames: []
+  # -- Path prefixes routed to the seller.
+  pathPrefixes:
+    - /
+  healthCheck:
+    # -- GKE HealthCheckPolicy (networking.gke.io/v1) targeting the seller Service.
+    # Rendered only on clusters that have the GKE CRD.
+    enabled: true
+    # -- HTTP path the load balancer probes. "/" returns 200 for the seller.
+    path: /
+
+externalSecret:
+  # -- Sync app secrets from GCP Secret Manager via External Secrets Operator
+  # into a single Secret shared by both the seller and buyer pods.
+  enabled: true
+  apiVersion: external-secrets.io/v1
+  refreshInterval: 1h
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: ClusterSecretStore
+  # -- Name of the synced K8s Secret; empty uses "<fullname>-secrets".
+  target:
+    name: ""
+  # `dataFrom.extract` pulls one JSON Secret Manager entry whose keys become the
+  # synced Secret's keys. Expected keys (consumed via envFrom by both roles):
+  #   SUPABASE_SERVICE_ROLE_KEY, SELLER_PRIVATE_KEY, BUYER_PRIVATE_KEY
+  # Use `data` instead for explicit per-key mapping (see reference chart).
+  dataFrom:
+    - extract:
+        key: arc-nanopayments
+  data: []

@@ -1,0 +1,65 @@
+# Haia dev cluster (GKE) overlay for arc-nanopayments.
+#
+# Usage (CI deploys this automatically; the seller hostname + namespace are
+# injected from GitHub Actions variables — DEV_HOST / DEPLOY_NAMESPACE — so
+# they stay out of this public file). Run manually with:
+#   helm upgrade --install arc-nanopayments deploy/helm \
+#     -n <namespace> --create-namespace \
+#     -f deploy/helm/values-dev.yaml \
+#     --set httpRoute.hostnames[0]=<seller-host>
+#
+# Cluster-side prerequisites (must exist before deploy):
+#   - Gateway API CRDs (gateway.networking.k8s.io/v1) + the shared external
+#     Gateway `external-gateway` in the `infra` namespace, with a listener that
+#     admits routes for the dev domain from this namespace.
+#   - External Secrets Operator (external-secrets.io/v1) with a
+#     `gcp-secret-manager` ClusterSecretStore wired to the project.
+#   - A single GCP Secret Manager entry (JSON) with all app secrets:
+#       arc-dev-nanopayments -> { SUPABASE_SERVICE_ROLE_KEY, SELLER_PRIVATE_KEY, BUYER_PRIVATE_KEY }
+#   - DNS: the seller host -> the external Gateway's address.
+# (No image pull secret needed — the GHCR package is public.)
+
+image:
+  # CI publishes ghcr.io/haia-finance/arc-nanopayments:latest (mutable).
+  # Always re-pull so each rollout picks up the freshly pushed image.
+  tag: latest
+  pullPolicy: Always
+
+# Non-secret env. SUPABASE_SERVICE_ROLE_KEY / SELLER_PRIVATE_KEY / BUYER_PRIVATE_KEY
+# come from ESO (below); NEXT_PUBLIC_* are baked into the image at build time.
+config:
+  # seller wallet address (public, safe to commit).
+  SELLER_ADDRESS: "0x4c40F215A209F873aCd89226f40c1Db1A1B6553d"
+  # Faster demo cadence in dev (default is 600000 = 10 min).
+  PAYMENT_INTERVAL_MS: "60000"
+
+# ── Routing — GKE Gateway API ──────────────────────────────────────────────
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: external-gateway
+      namespace: infra
+  # Seller hostname is injected by CI from the DEV_HOST Actions variable
+  # (kept out of this public file). For manual installs pass:
+  #   --set httpRoute.hostnames[0]=<seller-host>
+  hostnames: []
+  pathPrefixes:
+    - /
+  healthCheck:
+    enabled: true
+    path: /
+
+# ── Secrets — GCP Secret Manager via External Secrets Operator ─────────────
+# One shared entry synced into one Secret, consumed by both roles.
+externalSecret:
+  enabled: true
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: ClusterSecretStore
+  refreshInterval: 15m
+  dataFrom:
+    - extract:
+        key: arc-dev-nanopayments
+
+# Keep registry/history churn low on dev.
+revisionHistoryLimit: 2

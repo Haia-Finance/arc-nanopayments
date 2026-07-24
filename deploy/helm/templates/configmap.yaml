@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "arc-nanopayments.fullname" . }}-config
+  labels:
+    {{- include "arc-nanopayments.labels" . | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  # Derived: the in-cluster seller URL the buyer agent targets.
+  BASE_URL: {{ include "arc-nanopayments.sellerBaseUrl" . | quote }}

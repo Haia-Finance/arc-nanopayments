@@ -1,0 +1,24 @@
+{{- /* GKE Gateway needs an explicit HealthCheckPolicy or the Cloud LB uses its
+   own default probe against the target Service. "/" returns 200 for the seller,
+   so the default works too, but this makes the check explicit and configurable.
+   Gated on the networking.gke.io CRD so non-GKE Gateway implementations
+   (Envoy Gateway, Contour, …) don't trip on a missing CRD. */ -}}
+{{- if and .Values.httpRoute.enabled .Values.httpRoute.healthCheck.enabled (.Capabilities.APIVersions.Has "networking.gke.io/v1") -}}
+{{- $component := "seller" -}}
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "arc-nanopayments.fullname" . }}-{{ $component }}
+  labels:
+    {{- include "arc-nanopayments.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: {{ .Values.httpRoute.healthCheck.path | quote }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "arc-nanopayments.fullname" . }}-{{ $component }}
+{{- end -}}
