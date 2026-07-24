@@ -4,6 +4,11 @@ on:
   push:
     branches: [master]
 
+# Never let two deploys of the same branch overlap.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -45,3 +50,45 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ env.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+
+  # Deploy the Helm chart straight from the repo checkout (no chart registry)
+  # to the dev GKE cluster, pinning the image to this commit's tag.
+  deploy:
+    needs: docker
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation to GCP
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GHA_SA }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          project_id: ${{ vars.GKE_PROJECT }}
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GKE_LOCATION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.0
+
+      # Deploy :latest (per values-dev.yaml). deployRevision changes the pod
+      # spec each commit so Helm rolls the pods; with pullPolicy: Always the
+      # rollout then pulls the freshly pushed :latest image.
+      - name: Helm upgrade --install
+        run: |
+          helm upgrade --install arc-nanopayments deploy/helm \
+            -f deploy/helm/values-dev.yaml \
+            --set deployRevision=${{ github.sha }} \
+            --set httpRoute.hostnames[0]=${{ vars.DEV_HOST }} \
+            -n ${{ vars.DEPLOY_NAMESPACE }} \
+            --wait --timeout 10m
